@@ -1,0 +1,384 @@
+---
+title: "FinalProj"
+author: "Omar Hassoun"
+date: "December 15, 2019"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+ bootr = function(B, train){
+  mod <-svm(`Class/ASD`~.-result-country_of_residence, data=train, kernel="radial", gamma=1)
+
+preds <- predict(mod)
+
+#bootstrap:
+
+#number of bootstrap resamples
+bootpred <- matrix(ncol = length(preds), nrow = 100)
+ #for reproducibility
+
+#loop over n
+for (i in 1:B) {
+  ind = sample(nrow(train), replace = TRUE)
+  bootdat <- train[ind,] #bootstrap resample of data
+  bootmod <- svm(`Class/ASD`~.-result-country_of_residence, data = bootdat) #fit model to bootstrap resample
+  bootpred[i,] <- predict(bootmod, type="response") #calculate predictions from this model
+}
+bopred = colMeans(bootpred)
+}
+
+
+```
+
+```{r}
+library("readxl")
+autism = read_excel("AutismData.xlsx")
+autism_original = autism
+```
+#Data Cleaning
+##Type Conversion
+```{r}
+#We observe the variables to get an overview 
+dim(autism)
+summary(autism)
+str(autism)
+
+# Type conversion
+#get questions 1 to 10 and convert to binary
+bin_vars = grep("A[0-9]+_Score", colnames(autism))
+#these are the columns that are going to be changed
+colnames(autism[bin_vars])
+summary(autism[bin_vars])
+str(autism[bin_vars])
+#there are no missing values among these columns
+autism[bin_vars] <- lapply(autism[bin_vars] , factor) 
+#some values that were characters were converted to numeric
+#there are two missing observations in age that are represented by "?"
+autism$age[autism$age == "?"] #they were 2 handled when converted into numeric
+autism$age = as.numeric(autism$age)
+summary(autism$age) 
+#NAs will be handled after convertinng and vizualizng other variables
+library(dplyr) 
+count(autism, ethnicity) #There are 2 variables called "others" and 95 "?"
+autism['others' == autism$ethnicity,'ethnicity'] =  "Others"#the obs name was fixed
+autism['?' == autism$ethnicity,'ethnicity'] = NA
+count(autism, gender)
+autism$gender = as.factor(autism$gender)
+#Jaundice
+count(autism, jundice)
+autism$jundice = as.factor(autism$jundice)
+count(autism, country_of_residence)
+#Converted into factors to use as part of predicttions, since 
+#diseases and conditions are affected by the enviroment
+autism$country_of_residence = as.factor(autism$country_of_residence)
+#converted to factor
+count(autism, used_app_before) #count function used to check for NAs or NAs like ("?")
+autism$used_app_before = as.factor(autism$used_app_before)
+
+boxplot(autism$result)
+count(autism, age_cat)
+#factor again
+#this is the class 
+autism$`Class/ASD` = as.factor(autism$`Class/ASD`)
+
+count(autism, relation)  
+autism$relation[autism$relation == "?"] = NA
+autism$relation = as.factor(autism$relation)
+
+count(autism, austim) #this is family PDD
+autism$austim = as.factor(autism$austim)
+
+
+autism$ethnicity = as.factor(autism$ethnicity)
+```
+##NA Handling
+```{r}
+#count the NAs
+sum(is.na(autism))
+#returns columns that has missing values
+sapply(autism, function(x){
+  sum(is.na(x))
+})
+#Most of the missing values are in the relation column
+#because they are a lot of values, almost a 7th and could highly 
+
+plot(autism[is.na(autism$relation),'Class/ASD'])
+#we observe that missing values of individuals that have autism are higher proportion
+#we decide to put "Unknown" in places where we have NAs in relation column and check if it affects predictions
+# Get levels and add "Unknown"
+levels <- levels(autism$relation)
+levels[length(levels) + 1] <- "Unknown"
+autism$relation <- factor(autism$relation, levels = levels)
+autism$relation[is.na(autism$relation)] <- "Unknown"
+count(autism, relation)
+
+#There were missing values at age:
+sum(is.na(autism$age))
+autism[is.na(autism$age),]
+# will replace it with the median of the ages, since the screeing method type was the same for all variables
+#and there is an outlier that is increasing the mean a lot
+autism$age[is.na(autism$age)] = median(autism$age)
+sapply(autism, function(x){
+  sum(is.na(x))
+})
+
+#lastly we will handle the ethnicity column
+autism[is.na(autism$ethnicity),]
+#apparently columns that have missing values in ethnicity also have missing values in relation
+#often the ethnicity can be determined from the country of residence e.g: White people from some european country, but because the population distribution tends to be a lot more complex, 
+#i've decided to change missing values for just "Unknown"
+
+ethno_res = autism %>% group_by(country_of_residence) %>% count(ethnicity)  
+#get indices of misisng values
+
+levels <- levels(autism$ethnicity)
+levels[length(levels) + 1] <- "Unknown"
+autism$ethnicity <- factor(autism$ethnicity, levels = levels)
+autism$ethnicity[is.na(autism$ethnicity)] <- "Unknown"
+count(autism, ethnicity)
+
+sum(is.na(autism))
+
+#finally, we will handle the missing values in age 
+missing_ages = which(is.na(autism$age))
+autism[missing_ages,]
+#I've decided to replace the missing ages with some value
+#but first I would like to know if age is a significant predictor for the class 
+#we previously observed an outlier, so wr are excluding it
+age.glm = glm(`Class/ASD`~age, data = autism[-max(autism$age, na.rm = TRUE),], family = binomial)
+summary(age.glm)
+#the p value for the age is not significant, so I will replace age with with the median
+age_noNA = autism$age
+age_noNA[missing_ages] = median(age_noNA, na.rm = TRUE)
+sum(is.na(age_noNA))
+autism$age = age_noNA
+#all mising values were handled
+sum(is.na(autism))
+```
+
+##Outliers
+```{r}
+#get all numerical variables
+numeric_cols = sapply(autism, is.numeric)
+autism[,numeric_cols]
+#we just have 2 numeric variables
+boxplot(autism$age)
+boxplot(autism$result)
+
+#age clearly has an outlier, for an age that does not make sense
+#so we will replace that age for the median
+autism$age[which(max(autism$age) == autism$age)] = median(autism$age)
+boxplot(autism$age)$out #after removing the variable, we observe other variables outside 
+#will not remove them from the data since they are not too far from the mean of the data + 3 standard deviations
+```
+##Removal
+```{r}
+#there is a column (age_cat) that contains a single value "18 and more", that will be removed,
+#since it's not useful for predictions because there is no variability and they probably used the test for 
+#adults in the those ages below 18
+sum(autism$age < 18)
+autism$age[autism$age < 18]
+autism = autism[,-which(colnames(autism) == "age_cat")]
+
+```
+
+##Useful Plots
+```{r}
+#to check results against the Class variable 
+plot(autism$`Class/ASD`, autism$result)
+#we observe that all variables above 6 correspond to ASD and below, do not have ASD
+autism %>% group_by(result, `Class/ASD`) %>% count(`Class/ASD`)
+result.vs.class = glm(result~`Class/ASD`, data = autism)
+summary(result.vs.class)
+
+```
+
+#Model Building
+##Trees
+###Naive Training Tree
+```{r}
+library(tree)
+#Tree function does not allow to use factor with more than 32 levels, so I decided to convert each of 
+#the countries into integers and fit it into the model, if I find out that it's a useful predictor, I will 
+#keep it
+#Training Tree was built with the purpose of collecting the training error
+#of a tree using  anaive approach
+country_id = as.numeric(autism$country_of_residence)
+autism_update = autism %>% mutate(country_id = country_id)
+#result should not be used in the model, since Class/ASD variable is obtained through results
+tree.attempt = tree(`Class/ASD`~.-country_of_residence-result, data = autism_update)
+summary(tree.attempt)
+library(rpart) 
+plot(tree.attempt, 
+   main="Classification Tree for ASD")
+text(tree.attempt, all=TRUE, cex=.8)
+tree.attempt
+
+#Na
+
+```
+
+
+###Validation Set Tree
+```{r}
+library(caret)
+#Separate Data into Test and Train set
+set.seed(1) #0.8 was not chosen with any criteria
+shuffle =sample(nrow(autism_update))
+autism_update = autism_update[shuffle,]
+split = round(nrow(autism_update) * .8)
+train = autism_update[1:split,]
+test = autism_update[(split+1):nrow(autism_update),]
+tree.validation = tree(`Class/ASD`~.-country_of_residence-result, data = train)
+tree.pred=predict(tree.validation ,test,type="class")
+confusionMatrix(tree.pred, test$`Class/ASD`)
+mean(tree.pred == test$`Class/ASD`)
+summary(tree.validation)
+plot(tree.validation, 
+   main="Classification Tree for ASD")
+text(tree.attempt, all=TRUE, cex=.8)
+
+
+```
+
+###Cost Complexity Prunning
+```{r}
+set.seed(2)
+tree.cv =cv.tree(tree.validation ,FUN=prune.misclass)
+names(tree.cv)
+tree.cv
+#Tree with the lowest error rate is the one with 15 terminal nodes
+par(mfrow=c(1,2)) 
+plot(tree.cv$size ,tree.cv$dev ,type="b")
+plot(tree.cv$k ,tree.cv$dev ,type="b") 
+#We observe in the plot that tree with less terminal nodes and lower alpha, tend to perform better
+
+#now that we have the parameters, it's time to prune
+
+tree.prune =prune.misclass(tree.validation ,best=12)
+plot(tree.prune)
+text(tree.prune ,pretty =0)
+summary(tree.prune)
+tree.prune.pred = predict(tree.prune, test, type = "class")
+confusionMatrix(tree.prune.pred, test$`Class/ASD`)
+#Tree accuracy apparently decreased after pruning, it could be explained
+#by the fact that less variables were used
+```
+
+###Random Forests
+####Bagging
+```{r}
+library(randomForest)
+tree.bag = randomForest(`Class/ASD`~.-result-country_of_residence, data=train, mtry=ncol(autism_update), importance = TRUE)
+tree.bag
+yhat.bag = predict(tree.bag, newdata = test, type="Class")
+confusionMatrix(yhat.bag, test$`Class/ASD`)
+#Prediction accuracy does not seem to improve after bagging
+```
+###Normal Random Forests
+```{r}
+tree.rf = randomForest(`Class/ASD`~.-country_of_residence-result, data=train, mtry=sqrt(20), importance = TRUE)
+yhat.rf = predict(tree.rf, newdata=test, type="Class")
+summary(tree.rf)
+confusionMatrix(yhat.rf, test$`Class/ASD`)
+plot(tree.rf)
+
+
+oob.err = double(ncol(autism_update))
+test.err = double(ncol(autism_update))
+for(mtry in 1:ncol(autism_update)){
+   tree.rf = randomForest(`Class/ASD`~.-country_of_residence-result, data=train, mtry=mtry, importance=TRUE)
+  oob.err[mtry] =  mean(tree.rf$err.rate[,1])
+  pred = predict(tree.rf, test, type="Class")
+  test.err[mtry] = mean(pred != test$`Class/ASD`)
+}
+which(min(test.err) == test.err)
+which(min(oob.err) == oob.err)
+
+#will choose the 4 as the mtry
+tree.rf = randomForest(`Class/ASD`~.-country_of_residence-result, data=train, mtry=4, importance=TRUE)
+plot(tree.rf)
+importance(tree.rf)
+varImpPlot(tree.rf)
+```
+
+###Boosting
+```{r}
+#make a column for boosting 
+library("gbm")
+class_numeric = ifelse(as.character(train$`Class/ASD`) == "YES", 1, 0)
+train_boost = cbind(train, class_numeric)
+class_numeric = ifelse(as.character(test$`Class/ASD`) == "YES", 1, 0)
+test_boost = cbind(test, class_numeric)
+boost = gbm(class_numeric~.-country_of_residence-result-`Class/ASD`, data = train_boost, distribution = "bernoulli", n.tree = 5000)
+plot(boost)
+summary(boost)
+boost.pred = predict(boost, test_boost, n.trees = 5000)
+mean((boost.pred-test_boost$class_numeric)^2) 
+oob.naive = gbm.perf(boost, method="OOB")
+oob.naive
+#Number of predictors for this model was similar as other models
+#Now we will try tuning
+
+```
+
+##Support Vector Machines
+###Linear
+```{r}
+library(e1071)
+#We scale them, because not all variables use the same units
+#We are setting the default cost for learning purposes
+svm.linear=svm(`Class/ASD`~.-result-country_of_residence, data=train, kernel ="linear", type = "C-classification",scale=TRUE)
+svm.linear
+svm.linear$index
+svm.linear.pred = predict(svm.linear, test)
+mean(svm.linear.pred == test$`Class/ASD`)
+#The vectors are linear 
+summary(svm.linear)
+
+#implementing it with smaller cost 
+
+ svmfit=svm(`Class/ASD`~.-result-country_of_residence, data=train , kernel ="linear", cost=0.1, scale=TRUE) 
+ svmfit.pred = predict(svmfit, test)
+ mean(svmfit.pred == test$`Class/ASD`) #accuracy decreased 
+ summary(svmfit) #the number of support vector increased as we decreased the margin from 1 to 0.1
+ #makes sense since we increased the margin
+ svmfit$index
+ 
+ tune.out =tune(svm, `Class/ASD`~.-result-country_of_residence, data=train, kernel="linear", ranges=list(cost=c(0.001, 0.01, 0.1, 1,5,10,100)) )
+ svmfit.best = tune.out$best.model
+ summary(svmfit.best)
+       
+```
+
+###Radial
+```{r}
+svm.radial = svm(`Class/ASD`~.-result-country_of_residence, data=train, kernel="radial", gamma=1)
+summary(svm.radial)
+
+
+tune.out.radial = tune(svm, `Class/ASD`~.-result-country_of_residence, data=train, kernel="radial", ranges = list(0.1, 1,10,100,1000), gamma=c(0.5,1,2,3,4))
+summary(tune.out)
+radial.bestmodel = tune.out.radial$best.model
+summary(radial.bestmodel)
+#Number of support vectors increased significantly after using a radial kernel,
+radial.pred = predict(radial.bestmodel, test)
+mean(radial.pred == test$`Class/ASD`)
+#Radial Kernel performs worse than the linear, most likely because a linear boundary is more appropiate for the data
+
+
+
+```
+
+#Conclusion
+Most accurate model among Trees was the bagging model, with an accuracy of .93. The most accurate SVM model was the linear, with an accuracy of 1. Trees already produce their own bootstrap when bagging.
